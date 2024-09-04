@@ -59,6 +59,14 @@ bool motorMoved = false; // Track motor movement state
 int lastPanAngle = -1; // Initialize with an invalid value
 int lastTiltAngle = -1; // Initialize with an invalid value
 
+void displayConnectToWiFi() {
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Please connect");
+  lcd.setCursor(0, 1);
+  lcd.print("to WiFi...");
+}
+
 void displayConnectingToWiFi() {
   lcd.clear();
   lcd.setCursor(0, 0);
@@ -75,6 +83,15 @@ void displayWiFiConnected() {
   lcd.print(WiFi.localIP());
 }
 
+void displayWelcomeMessage() {
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Welcome to");
+  lcd.setCursor(0, 1);
+  lcd.print("Eggcubator");
+  delay(3000); // Display welcome message for 3 seconds
+}
+
 void setup() {
   Serial.begin(115200);
 
@@ -82,24 +99,27 @@ void setup() {
   lcd.begin(16, 2);
   lcd.setBacklight(255);
 
-  // Display "Connecting to WiFi" on the LCD while connecting
-  displayConnectingToWiFi();
+  // Display "Please connect to WiFi" on the LCD
+  displayConnectToWiFi();
 
   // Initialize WiFiManager
   WiFiManager wm;
   bool res;
   
-  // res = wm.autoConnect(); // auto generated AP name from chipid
-  res = wm.autoConnect("Eggcubator-AP", "admin123"); // custom AP name
+  // Start the WiFi connection process
+  res = wm.autoConnect("Eggcubator-WM", "admin123"); // custom AP name
 
   if (!res) {
-    Serial.println("Failed to connect");
-    // Reset and try again, or you could put it to deep sleep
+    Serial.println("Failed to connect to WiFi");
+    // Optionally reset and try again, or you could put it to deep sleep
     ESP.restart();
   } else {
     // Display "WiFi Connected" on the LCD after connecting
     displayWiFiConnected();
-    Serial.println("Connected to Wi-Fi successfully");
+    Serial.println("Connected to WiFi successfully");
+
+    // Display the welcome message
+    displayWelcomeMessage();
   }
 
   // Firebase configuration
@@ -147,67 +167,6 @@ void setup() {
 }
 
 void loop() {
-  if (Firebase.ready() && signupOK && (millis() - sendDataPrevMillis > 15000 || sendDataPrevMillis == 0)) {
-    sendDataPrevMillis = millis();
-
-    // Write an Int number on the database path test/int
-    if (Firebase.RTDB.setInt(&fbdo, "test/int", count)) {
-      Serial.println("PASSED");
-      Serial.println("PATH: " + fbdo.dataPath());
-      Serial.println("TYPE: " + fbdo.dataType());
-    } else {
-      Serial.println("FAILED");
-      Serial.println("REASON: " + fbdo.errorReason());
-    }
-    count++;
-
-    // Write a Float number on the database path test/float
-    if (Firebase.RTDB.setFloat(&fbdo, "test/float", 0.01 + random(0, 10))) {
-      Serial.println("PASSED");
-      Serial.println("PATH: " + fbdo.dataPath());
-      Serial.println("TYPE: " + fbdo.dataType());
-    } else {
-      Serial.println("FAILED");
-      Serial.println("REASON: " + fbdo.errorReason());
-    }
-  }
-
-  // Retrieve motor operation time from Firebase
-  if (Firebase.RTDB.getInt(&fbdo, "/control/motorOperationTime")) {
-    motorOperationTimeMillis = fbdo.intData() * 3600000UL; // Convert hours to milliseconds
-    Serial.print("Motor Operation Time (ms): ");
-    Serial.println(motorOperationTimeMillis);
-  } else {
-    Serial.print("Failed to get motorOperationTime: ");
-    Serial.println(fbdo.errorReason());
-  }
-
-  // If motorOperationTime is 0, turn off the motor
-  if (motorOperationTimeMillis == 0) {
-    if (motorMoved) {
-      // Return the motor to the original position if it has moved
-      Serial.println("Returning to 0 degrees (Motor Operation Time is 0)");
-      myStepper.step(-STEPS_TO_MOVE); // Move back to 0 degrees
-      motorMoved = false; // Reset motor state
-    }
-  } else {
-    // Rotate motor to 180 degrees and then back to 0 degrees based on the operation time
-    if (!motorMoved) {
-      Serial.println("Rotating 180 degrees");
-      myStepper.step(STEPS_TO_MOVE); // Move 180 degrees
-      motorStartMillis = millis(); // Record the time when the motor started moving
-      moveBackTime = motorStartMillis + motorOperationTimeMillis; // Set time to move back to 0 degrees
-      motorMoved = true; // Mark motor as moved
-    }
-
-    // Move the motor back to 0 degrees after the set interval
-    if (motorMoved && millis() >= moveBackTime) {
-      Serial.println("Returning to 0 degrees");
-      myStepper.step(-STEPS_TO_MOVE); // Move back to 0 degrees
-      motorMoved = false; // Reset motor state
-    }
-  }
-
   // Read humidity and temperature from DHT sensor
   float h = dht.readHumidity();
   float t = dht.readTemperature();
@@ -217,10 +176,42 @@ void loop() {
     return;
   }
 
-  // Turn off relay 1 if temperature exceeds 36.5°C
-  if (t >= 36.5) {
+  // Display temperature and humidity on the LCD
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Temp: ");
+  lcd.print(t);
+  lcd.print((char)223); // Degree symbol
+  lcd.print("C");
+
+  lcd.setCursor(0, 1);
+  lcd.print("Humidity: ");
+  lcd.print(h);
+  lcd.print("%");
+
+  // Control the relays based on the temperature
+  if (t < 30) {
+    digitalWrite(RELAY1_PIN, HIGH);
+    Serial.println("Temperature below 30°C. RELAY1 activated.");
+  } else {
     digitalWrite(RELAY1_PIN, LOW);
-    Serial.println("Temperature exceeds 36.5°C. Light turned off.");
+    Serial.println("Temperature above 30°C. RELAY1 deactivated.");
+  }
+
+  if (t < 35) {
+    digitalWrite(RELAY2_PIN, HIGH);
+    Serial.println("Temperature below 35°C. RELAY2 activated.");
+  } else {
+    digitalWrite(RELAY2_PIN, LOW);
+    Serial.println("Temperature above 35°C. RELAY2 deactivated.");
+  }
+
+  if (t < 37) {
+    digitalWrite(RELAY3_PIN, LOW);
+    Serial.println("Temperature below 37°C. RELAY3 deactivated.");
+  } else {
+    digitalWrite(RELAY3_PIN, HIGH);
+    Serial.println("Temperature above 37°C. RELAY3 activated.");
   }
 
   // Update Firebase with sensor data
@@ -238,73 +229,43 @@ void loop() {
     Serial.println(fbdo.errorReason());
   }
 
-  // Display temperature and humidity on the LCD
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print("Hum: ");
-  lcd.print(h);
-  lcd.print(" %");
-  lcd.setCursor(0, 1);
-  lcd.print("Temp: ");
-  lcd.print(t);
-  lcd.print(" C");
-
-  // Read control settings from Firebase
-  if (Firebase.RTDB.getFloat(&fbdo, "/settings/maxHumidity")) {
-    float maxHumidity = fbdo.floatData();
-    Serial.print("Max Humidity: ");
-    Serial.println(maxHumidity);
+  // Retrieve LED light control from Firebase
+  if (Firebase.RTDB.getBool(&fbdo, "/light")) {
+    digitalWrite(LED_LIGHT_PIN, fbdo.boolData() ? HIGH : LOW);
+    Serial.print("LED Light state: ");
+    Serial.println(fbdo.boolData() ? "ON" : "OFF");
   } else {
-    Serial.print("Failed to get maxHumidity: ");
+    Serial.print("Failed to get LED light state: ");
     Serial.println(fbdo.errorReason());
   }
 
-  if (Firebase.RTDB.getFloat(&fbdo, "/settings/maxTemperature")) {
-    float minTemperature = fbdo.floatData();
-    Serial.print("Min Temperature: ");
-    Serial.println(minTemperature);
-  } else {
-    Serial.print("Failed to get minTemperature: ");
-    Serial.println(fbdo.errorReason());
-  }
-
-  // Control servos based on Firebase data
+  // Retrieve and set the pan angle from Firebase
   if (Firebase.RTDB.getInt(&fbdo, "/servos/pan")) {
     int panAngle = fbdo.intData();
-    if (panAngle != lastPanAngle) {
+    if (panAngle != lastPanAngle) { // Only move if the angle has changed
       panServo.write(panAngle);
       lastPanAngle = panAngle;
-      Serial.print("Pan Angle: ");
+      Serial.print("Pan Servo Angle: ");
       Serial.println(panAngle);
     }
   } else {
-    Serial.print("Failed to get panAngle: ");
+    Serial.print("Failed to get pan angle: ");
     Serial.println(fbdo.errorReason());
   }
 
+  // Retrieve and set the tilt angle from Firebase
   if (Firebase.RTDB.getInt(&fbdo, "/servos/tilt")) {
     int tiltAngle = fbdo.intData();
-    if (tiltAngle != lastTiltAngle) {
+    if (tiltAngle != lastTiltAngle) { // Only move if the angle has changed
       tiltServo.write(tiltAngle);
       lastTiltAngle = tiltAngle;
-      Serial.print("Tilt Angle: ");
+      Serial.print("Tilt Servo Angle: ");
       Serial.println(tiltAngle);
     }
   } else {
-    Serial.print("Failed to get tiltAngle: ");
+    Serial.print("Failed to get tilt angle: ");
     Serial.println(fbdo.errorReason());
   }
 
-  // Control LED light based on Firebase data
-  if (Firebase.RTDB.getBool(&fbdo, "/light")) {
-    bool ledLight = fbdo.boolData();
-    digitalWrite(LED_LIGHT_PIN, ledLight ? HIGH : LOW);
-    Serial.print("LED Light: ");
-    Serial.println(ledLight ? "ON" : "OFF");
-  } else {
-    Serial.print("Failed to get ledLight: ");
-    Serial.println(fbdo.errorReason());
-  }
-
-  delay(2000); // Delay between sensor readings
+  delay(2000); // Delay for 2 seconds before the next loop iteration
 }
