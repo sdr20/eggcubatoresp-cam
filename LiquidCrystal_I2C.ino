@@ -14,160 +14,117 @@
 #define FIREBASE_HOST "itlog-database-default-rtdb.asia-southeast1.firebasedatabase.app"
 #define FIREBASE_API_KEY "AIzaSyBlob6OB0gXhG7JTno7zY_mTFhHQkzVI3g"
 
-// Define the number of steps per revolution for your motor
-#define STEPS_PER_REVOLUTION 2048
-#define STEPS_TO_MOVE 1024 // 180 degrees
+// Define constants
+#define STEPS_PER_REVOLUTION 2048 // Full revolution steps for the stepper motor
+#define STEPS_FOR_180_DEGREES (STEPS_PER_REVOLUTION / 2) // Steps for 180 degrees
 
-// Initialize the stepper library on pins 26, 25, 33, and 32
-Stepper myStepper(STEPS_PER_REVOLUTION, 26, 25, 33, 32);
-
-// Servo pins
 #define SERVO_PAN_PIN 18
 #define SERVO_TILT_PIN 19
-
-Servo panServo;
-Servo tiltServo;
-
-// Initialize the DHT sensor
 #define DHTPIN 4
 #define DHTTYPE DHT11
-DHT dht(DHTPIN, DHTTYPE);
-
-// Initialize the LCD
-LiquidCrystal_I2C lcd(0x27, 16, 2); // LCD address 0x27, 16 columns, 2 rows
-
-// Relay pin definitions
 #define RELAY1_PIN 27
 #define RELAY2_PIN 14
 #define RELAY3_PIN 12
-
-// LED light relay pin
 #define LED_LIGHT_PIN 33
 
+// Initialize peripherals
+Stepper myStepper(STEPS_PER_REVOLUTION, 26, 25, 33, 32);
+Servo panServo, tiltServo;
+DHT dht(DHTPIN, DHTTYPE);
+LiquidCrystal_I2C lcd(0x27, 16, 2);
+
+// Firebase and WiFi objects
 FirebaseData fbdo;
 FirebaseAuth auth;
 FirebaseConfig config;
+WiFiManager wm;
 
-unsigned long sendDataPrevMillis = 0;
-unsigned long motorStartMillis = 0;
-unsigned long moveBackTime = 0;
-int count = 0; // Declare count variable here
+// State variables
+int lastPanAngle = -1;
+int lastTiltAngle = -1;
 bool signupOK = false;
-unsigned long motorOperationTimeMillis = 3600000; // Default to 1 hour in milliseconds
-bool motorMoved = false; // Track motor movement state
+int lastOperationTime = -1;
 
-int lastPanAngle = -1; // Initialize with an invalid value
-int lastTiltAngle = -1; // Initialize with an invalid value
-
-void displayConnectToWiFi() {
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print("Please connect");
-  lcd.setCursor(0, 1);
-  lcd.print("to WiFi...");
-}
-
-void displayConnectingToWiFi() {
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print("Connecting to");
-  lcd.setCursor(0, 1);
-  lcd.print("WiFi...");
-}
-
-void displayWiFiConnected() {
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print("WiFi Connected");
-  lcd.setCursor(0, 1);
-  lcd.print(WiFi.localIP());
-}
-
-void displayWelcomeMessage() {
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print("Welcome to");
-  lcd.setCursor(0, 1);
-  lcd.print("Eggcubator");
-  delay(3000); // Display welcome message for 3 seconds
-}
+// Function prototypes
+void connectToWiFi();
+void initializeFirebase();
+void updateSensorData();
+void controlRelays(float temperature);
+void controlServos();
+void controlStepper();
+void updateFirebase(const String &path, float value);
+void handleFirebaseError();
 
 void setup() {
   Serial.begin(115200);
-
-  // Initialize the LCD with number of columns and rows
   lcd.begin(16, 2);
   lcd.backlight();
 
-  // Display "Please connect to WiFi" on the LCD
-  displayConnectToWiFi();
+  connectToWiFi();
+  initializeFirebase();
 
-  // Initialize WiFiManager
-  WiFiManager wm;
-  bool res;
-  
-  // Start the WiFi connection process
-  res = wm.autoConnect("Eggcubator-AP", "admin123"); // custom AP name
-
-  if (!res) {
-    Serial.println("Failed to connect to WiFi");
-    // Optionally reset and try again, or you could put it to deep sleep
-    ESP.restart();
-  } else {
-    // Display "WiFi Connected" on the LCD after connecting
-    displayWiFiConnected();
-    Serial.println("Connected to WiFi successfully");
-
-    // Display the welcome message
-    displayWelcomeMessage();
-  }
-
-  // Firebase configuration
-  config.api_key = FIREBASE_API_KEY;
-  config.database_url = FIREBASE_HOST;
-
-  // Sign up
-  if (Firebase.signUp(&config, &auth, "", "")) {
-    Serial.println("ok");
-    signupOK = true;
-  } else {
-    Serial.printf("%s\n", config.signer.signupError.message.c_str());
-  }
-
-  // Assign the callback function for the long-running token generation task
-  config.token_status_callback = tokenStatusCallback;
-
-  // Initialize Firebase
-  Firebase.begin(&config, &auth);
-  Firebase.reconnectWiFi(true);
-
-  // Set the speed of the motor (RPM)
-  myStepper.setSpeed(15);
-
-  // Initialize the DHT sensor
+  myStepper.setSpeed(15); // Speed of the stepper motor
   dht.begin();
 
-  // Initialize the relay pins
+  // Initialize relays and LED light
   pinMode(RELAY1_PIN, OUTPUT);
   pinMode(RELAY2_PIN, OUTPUT);
   pinMode(RELAY3_PIN, OUTPUT);
-
-  // Initialize the LED light pin
   pinMode(LED_LIGHT_PIN, OUTPUT);
 
-  // Ensure the relays and LED light are off at startup
   digitalWrite(RELAY1_PIN, LOW);
   digitalWrite(RELAY2_PIN, LOW);
   digitalWrite(RELAY3_PIN, LOW);
   digitalWrite(LED_LIGHT_PIN, LOW);
 
-  // Initialize the servos
   panServo.attach(SERVO_PAN_PIN);
   tiltServo.attach(SERVO_TILT_PIN);
 }
 
 void loop() {
-  // Read humidity and temperature from DHT sensor
+  updateSensorData();
+  controlRelays(dht.readTemperature());
+  controlServos();
+  controlStepper();
+  delay(2000);
+}
+
+void connectToWiFi() {
+  lcd.clear();
+  lcd.print("Connecting to WiFi...");
+  if (wm.autoConnect("Eggcubator-AP", "admin123")) {
+    lcd.clear();
+    lcd.print("WiFi Connected");
+    lcd.setCursor(0, 1);
+    lcd.print(WiFi.localIP());
+    delay(3000);
+    lcd.clear();
+    lcd.print("Welcome to");
+    lcd.setCursor(0, 1);
+    lcd.print("Eggcubator");
+    delay(3000);
+  } else {
+    Serial.println("Failed to connect to WiFi");
+    ESP.restart();
+  }
+}
+
+void initializeFirebase() {
+  config.api_key = FIREBASE_API_KEY;
+  config.database_url = FIREBASE_HOST;
+  config.token_status_callback = tokenStatusCallback;
+
+  if (Firebase.signUp(&config, &auth, "", "")) {
+    signupOK = true;
+  } else {
+    Serial.printf("Firebase Sign-Up Error: %s\n", config.signer.signupError.message.c_str());
+  }
+
+  Firebase.begin(&config, &auth);
+  Firebase.reconnectWiFi(true);
+}
+
+void updateSensorData() {
   float h = dht.readHumidity();
   float t = dht.readTemperature();
 
@@ -176,98 +133,89 @@ void loop() {
     return;
   }
 
-  // Display temperature and humidity on the LCD
   lcd.clear();
   lcd.setCursor(0, 0);
   lcd.print("Temp: ");
   lcd.print(t);
-  lcd.print((char)223); // Degree symbol
+  lcd.print((char)223);
   lcd.print("C");
-
   lcd.setCursor(0, 1);
   lcd.print("Humidity: ");
   lcd.print(h);
   lcd.print("%");
 
-  // Control the relays based on the temperature
-  if (t < 30) {
-    digitalWrite(RELAY1_PIN, HIGH);
-    Serial.println("Temperature below 30°C. RELAY1 activated.");
-  } else {
-    digitalWrite(RELAY1_PIN, LOW);
-    Serial.println("Temperature above 30°C. RELAY1 deactivated.");
-  }
-
-  if (t < 35) {
-    digitalWrite(RELAY2_PIN, HIGH);
-    Serial.println("Temperature below 35°C. RELAY2 activated.");
-  } else {
-    digitalWrite(RELAY2_PIN, LOW);
-    Serial.println("Temperature above 35°C. RELAY2 deactivated.");
-  }
-
-  if (t < 37) {
-    digitalWrite(RELAY3_PIN, LOW);
-    Serial.println("Temperature below 37°C. RELAY3 deactivated.");
-  } else {
-    digitalWrite(RELAY3_PIN, HIGH);
-    Serial.println("Temperature above 37°C. RELAY3 activated.");
-  }
-
-  // Update Firebase with sensor data
-   // Update Firebase with sensor data
-  if (Firebase.RTDB.setFloat(&fbdo, "/sensor_data/humidity", h)) {
-    Serial.println("Humidity updated successfully");
-  } else {
-    Serial.print("Failed to update humidity: ");
-    Serial.println(fbdo.errorReason());
-  }
-
-  if (Firebase.RTDB.setFloat(&fbdo, "/sensor_data/temperature", t)) {
-    Serial.println("Temperature updated successfully");
-  } else {
-    Serial.print("Failed to update temperature: ");
-    Serial.println(fbdo.errorReason());
-  }
-
-  // Retrieve LED light control from Firebase
-  if (Firebase.RTDB.getBool(&fbdo, "/light")) {
-    digitalWrite(LED_LIGHT_PIN, fbdo.boolData() ? HIGH : LOW);
-    Serial.print("LED Light state: ");
-    Serial.println(fbdo.boolData() ? "ON" : "OFF");
-  } else {
-    Serial.print("Failed to get LED light state: ");
-    Serial.println(fbdo.errorReason());
-  }
-
-  // Retrieve and set the pan angle from Firebase
-  if (Firebase.RTDB.getInt(&fbdo, "/servos/pan")) {
-    int panAngle = fbdo.intData();
-    if (panAngle != lastPanAngle) { // Only move if the angle has changed
-      panServo.write(panAngle);
-      lastPanAngle = panAngle;
-      Serial.print("Pan Servo Angle: ");
-      Serial.println(panAngle);
-    }
-  } else {
-    Serial.print("Failed to get pan angle: ");
-    Serial.println(fbdo.errorReason());
-  }
-
-  // Retrieve and set the tilt angle from Firebase
-  if (Firebase.RTDB.getInt(&fbdo, "/servos/tilt")) {
-    int tiltAngle = fbdo.intData();
-    if (tiltAngle != lastTiltAngle) { // Only move if the angle has changed
-      tiltServo.write(tiltAngle);
-      lastTiltAngle = tiltAngle;
-      Serial.print("Tilt Servo Angle: ");
-      Serial.println(tiltAngle);
-    }
-  } else {
-    Serial.print("Failed to get tilt angle: ");
-    Serial.println(fbdo.errorReason());
-  }
-
-  delay(2000); // Delay for 2 seconds before the next loop iteration
+  updateFirebase("/sensor_data/humidity", h);
+  updateFirebase("/sensor_data/temperature", t);
 }
 
+void controlRelays(float temperature) {
+  digitalWrite(RELAY1_PIN, temperature < 30 ? HIGH : LOW);
+  digitalWrite(RELAY2_PIN, temperature < 35 ? HIGH : LOW);
+  digitalWrite(RELAY3_PIN, temperature >= 37 ? HIGH : LOW);
+  Serial.printf("Relay Status: %s %s %s\n", 
+                 temperature < 30 ? "RELAY1 ON" : "RELAY1 OFF", 
+                 temperature < 35 ? "RELAY2 ON" : "RELAY2 OFF",
+                 temperature >= 37 ? "RELAY3 ON" : "RELAY3 OFF");
+}
+
+void controlServos() {
+  int panAngle, tiltAngle;
+
+  if (Firebase.RTDB.getInt(&fbdo, "/servos/pan")) {
+    panAngle = fbdo.intData();
+    if (panAngle != lastPanAngle) {
+      panServo.write(panAngle);
+      lastPanAngle = panAngle;
+      Serial.printf("Pan Servo Angle: %d\n", panAngle);
+    }
+  } else {
+    handleFirebaseError();
+  }
+
+  if (Firebase.RTDB.getInt(&fbdo, "/servos/tilt")) {
+    tiltAngle = fbdo.intData();
+    if (tiltAngle != lastTiltAngle) {
+      tiltServo.write(tiltAngle);
+      lastTiltAngle = tiltAngle;
+      Serial.printf("Tilt Servo Angle: %d\n", tiltAngle);
+    }
+  } else {
+    handleFirebaseError();
+  }
+
+  if (Firebase.RTDB.getBool(&fbdo, "/light")) {
+    digitalWrite(LED_LIGHT_PIN, fbdo.boolData() ? HIGH : LOW);
+    Serial.printf("LED Light: %s\n", fbdo.boolData() ? "ON" : "OFF");
+  } else {
+    handleFirebaseError();
+  }
+}
+
+void controlStepper() {
+  int operationTime;
+  
+  // Check for motorOperationTime value in Firebase
+  if (Firebase.RTDB.getInt(&fbdo, "/control/motorOperationTime")) {
+    operationTime = fbdo.intData();
+    if (operationTime != lastOperationTime) {
+      int steps = STEPS_FOR_180_DEGREES; // Fixed 180-degree movement
+      myStepper.step(steps); // Move the stepper motor 180 degrees
+      lastOperationTime = operationTime;
+      Serial.printf("Stepper moved 180 degrees for operation time %d hours\n", operationTime);
+    }
+  } else {
+    handleFirebaseError();
+  }
+}
+
+void updateFirebase(const String &path, float value) {
+  if (Firebase.RTDB.setFloat(&fbdo, path.c_str(), value)) {
+    Serial.printf("%s updated successfully\n", path.c_str());
+  } else {
+    handleFirebaseError();
+  }
+}
+
+void handleFirebaseError() {
+  Serial.printf("Firebase Error: %s\n", fbdo.errorReason().c_str());
+}
