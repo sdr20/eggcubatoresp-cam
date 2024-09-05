@@ -9,7 +9,7 @@
 #define WIFI_PASSWORD "Sheila*082574"
 
 // Your Firebase project API key and URL
-#define FIREBASE_HOST "https://itlog-database-default-rtdb.asia-southeast1.firebasedatabase.app/"
+#define FIREBASE_HOST "https://itlog-database-default-rtdb.asia-southeast1.firebasedatabase.app"
 #define FIREBASE_API_KEY "AIzaSyBlob6OB0gXhG7JTno7zY_mTFhHQkzVI3g"
 
 // Firebase objects
@@ -51,12 +51,19 @@ void setup() {
   }
   Serial.println("Connected to WiFi");
 
-  // Initialize Firebase
+  // Firebase configuration
   config.api_key = FIREBASE_API_KEY;
   config.database_url = FIREBASE_HOST;
 
+  // Initialize Firebase with config and auth
   Firebase.begin(&config, &auth);
   Firebase.reconnectWiFi(true);
+
+  // Ensure Firebase setup is successful
+  if (!Firebase.ready()) {
+    Serial.println("Failed to connect to Firebase");
+    return;
+  }
 
   // Initialize camera
   camera_config_t config;
