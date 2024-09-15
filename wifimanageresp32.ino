@@ -49,9 +49,11 @@ bool signupOK = false;
 unsigned long motorOperationTimeMillis = 3600000; // Default to 1 hour in milliseconds for motor
 bool motorMoved = false; // Track motor movement state
 
-unsigned long relay4OperationTime = 0; // Time for how long RELAY4 will stay on
-unsigned long relay4StartTime = 0; // To track when RELAY4 was turned on
-bool relay4Active = false; // Track state of RELAY4
+// Variables for Relay 4 Timer logic
+unsigned long relay4TimerDuration = 0; // Store the timer duration from Firebase
+unsigned long relay4StartMillis = 0;   // Store when the relay 4 timer started
+bool relay4Active = false;             // State tracking if relay 4 is active
+bool relay4OnState = false;            // Track if relay 4 is in ON state for 8 seconds
 
 void displayConnectToWiFi() {
   lcd.clear();
@@ -182,62 +184,56 @@ void loop() {
   lcd.print("%");
 
   // Firebase: Upload temperature and humidity data
-  if (Firebase.RTDB.setFloat(&fbdo, "/sensor_data/temperature", t)) {
-    Serial.print("Temperature uploaded: ");
-    Serial.println(t);
-  } else {
-    Serial.print("Failed to upload temperature: ");
-    Serial.println(fbdo.errorReason());
-  }
-
-  if (Firebase.RTDB.setFloat(&fbdo, "/sensor_data/humidity", h)) {
-    Serial.print("Humidity uploaded: ");
-    Serial.println(h);
-  } else {
-    Serial.print("Failed to upload humidity: ");
-    Serial.println(fbdo.errorReason());
-  }
+  Firebase.RTDB.setFloat(&fbdo, "/sensor_data/temperature", t);
+  Firebase.RTDB.setFloat(&fbdo, "/sensor_data/humidity", h);
 
   // Relay 1 and 2 always ON
   digitalWrite(RELAY1_PIN, HIGH);
-  Serial.println("RELAY1 is always activated.");
-
   digitalWrite(RELAY2_PIN, HIGH);
-  Serial.println("RELAY2 is always activated.");
 
-  // Relay 3 turns OFF at 38°C and ON at 37°C
+  // Relay 3 Logic
   if (t >= 38) {
     digitalWrite(RELAY3_PIN, LOW);
-    Serial.println("Temperature >= 38°C. RELAY3 deactivated.");
   } else if (t <= 37) {
     digitalWrite(RELAY3_PIN, HIGH);
-    Serial.println("Temperature <= 37°C. RELAY3 activated.");
   }
 
-  // Firebase: Retrieve motor operation time and control RELAY4
+  // Firebase: Retrieve motor operation time for relay 4
   if (Firebase.RTDB.getInt(&fbdo, "/control/motorOperationTime")) {
-    relay4OperationTime = fbdo.intData() * 1000UL; // Convert seconds to milliseconds
-    Serial.print("Relay 4 Operation Time: ");
-    Serial.println(relay4OperationTime);
+    relay4TimerDuration = fbdo.intData() * 3600000UL; // Convert hours to milliseconds
+    Serial.print("Relay 4 Timer Duration: ");
+    Serial.println(relay4TimerDuration);
+  } else {
+    Serial.println("Failed to get motor operation time from Firebase.");
+  }
 
-    // If not already active, start the relay
-    if (!relay4Active && relay4OperationTime > 0) {
-      relay4StartTime = millis();
-      digitalWrite(RELAY4_PIN, HIGH); // Turn on RELAY4
-      relay4Active = true;
-      Serial.println("RELAY4 activated.");
+  // Relay 4 Timer Logic
+  unsigned long currentMillis = millis();
+
+  if (!relay4Active) {
+    // If relay 4 is not active, check if it's time to start
+    if (relay4TimerDuration > 0) {
+      relay4StartMillis = currentMillis; // Record the time when the timer starts
+      relay4Active = true;               // Set relay 4 as active
     }
   } else {
-    Serial.print("Failed to retrieve motor operation time: ");
-    Serial.println(fbdo.errorReason());
+    // If the relay 4 is active, check the timer
+    if ((currentMillis - relay4StartMillis) >= relay4TimerDuration) {
+      if (!relay4OnState) {
+        // Turn on Relay 4 for 8 seconds
+        digitalWrite(RELAY4_PIN, HIGH);
+        relay4OnState = true;
+        relay4StartMillis = currentMillis; // Reset timer for the 8 seconds ON period
+      } else {
+        // Turn off Relay 4 after 8 seconds
+        if ((currentMillis - relay4StartMillis) >= 8000) {
+          digitalWrite(RELAY4_PIN, LOW);
+          relay4OnState = false;
+          relay4Active = false; // Reset relay 4 for the next cycle
+        }
+      }
+    }
   }
 
-  // Turn off RELAY4 after the set duration
-  if (relay4Active && (millis() - relay4StartTime >= relay4OperationTime)) {
-    digitalWrite(RELAY4_PIN, LOW); // Turn off RELAY4
-    relay4Active = false;
-    Serial.println("RELAY4 deactivated.");
-  }
-
-  delay(2000); // Delay for 2 seconds before the next loop iteration
+  delay(2000); // Delay to prevent flooding the loop
 }
