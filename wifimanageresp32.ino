@@ -7,7 +7,6 @@
 #include <Wire.h>
 #include <LiquidCrystal_PCF8574.h> // Updated LCD library for ESP32
 #include <DHT.h>
-#include <ESP32Servo.h>
 #include <WiFiManager.h>
 
 // Firebase configuration
@@ -21,13 +20,6 @@
 // Initialize the stepper library on pins 26, 25, 33, and 32
 Stepper myStepper(STEPS_PER_REVOLUTION, 26, 25, 33, 32);
 
-// Servo pins
-#define SERVO_PAN_PIN 18
-#define SERVO_TILT_PIN 19
-
-Servo panServo;
-Servo tiltServo;
-
 // Initialize the DHT sensor
 #define DHTPIN 4
 #define DHTTYPE DHT11
@@ -40,6 +32,7 @@ LiquidCrystal_PCF8574 lcd(0x27); // Updated for ESP32
 #define RELAY1_PIN 27
 #define RELAY2_PIN 14
 #define RELAY3_PIN 12
+#define RELAY4_PIN 13 // Added RELAY4_PIN
 
 // LED light relay pin
 #define LED_LIGHT_PIN 33
@@ -53,11 +46,20 @@ unsigned long motorStartMillis = 0;
 unsigned long moveBackTime = 0;
 int count = 0; // Declare count variable here
 bool signupOK = false;
-unsigned long motorOperationTimeMillis = 3600000; // Default to 1 hour in milliseconds
+unsigned long motorOperationTimeMillis = 3600000; // Default to 1 hour in milliseconds for motor
 bool motorMoved = false; // Track motor movement state
 
-int lastPanAngle = -1; // Initialize with an invalid value
-int lastTiltAngle = -1; // Initialize with an invalid value
+unsigned long relay4OperationTime = 0; // Time for how long RELAY4 will stay on
+unsigned long relay4StartTime = 0; // To track when RELAY4 was turned on
+bool relay4Active = false; // Track state of RELAY4
+
+void displayConnectToWiFi() {
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Please connect");
+  lcd.setCursor(0, 1);
+  lcd.print("to WiFi...");
+}
 
 void displayConnectingToWiFi() {
   lcd.clear();
@@ -75,6 +77,15 @@ void displayWiFiConnected() {
   lcd.print(WiFi.localIP());
 }
 
+void displayWelcomeMessage() {
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Welcome to");
+  lcd.setCursor(0, 1);
+  lcd.print("Eggcubator");
+  delay(3000); // Display welcome message for 3 seconds
+}
+
 void setup() {
   Serial.begin(115200);
 
@@ -82,24 +93,23 @@ void setup() {
   lcd.begin(16, 2);
   lcd.setBacklight(255);
 
-  // Display "Connecting to WiFi" on the LCD while connecting
-  displayConnectingToWiFi();
+  // Display "Please connect to WiFi" on the LCD
+  displayConnectToWiFi();
 
   // Initialize WiFiManager
   WiFiManager wm;
   bool res;
   
-  // res = wm.autoConnect(); // auto generated AP name from chipid
-  res = wm.autoConnect("Eggcubator-AP", "admin123"); // custom AP name
+  // Start the WiFi connection process
+  res = wm.autoConnect("Eggcubator-WM", "admin123"); // custom AP name
 
   if (!res) {
-    Serial.println("Failed to connect");
-    // Reset and try again, or you could put it to deep sleep
+    Serial.println("Failed to connect to WiFi");
     ESP.restart();
   } else {
-    // Display "WiFi Connected" on the LCD after connecting
     displayWiFiConnected();
-    Serial.println("Connected to Wi-Fi successfully");
+    Serial.println("Connected to WiFi successfully");
+    displayWelcomeMessage();
   }
 
   // Firebase configuration
@@ -114,10 +124,7 @@ void setup() {
     Serial.printf("%s\n", config.signer.signupError.message.c_str());
   }
 
-  // Assign the callback function for the long-running token generation task
   config.token_status_callback = tokenStatusCallback;
-
-  // Initialize Firebase
   Firebase.begin(&config, &auth);
   Firebase.reconnectWiFi(true);
 
@@ -131,180 +138,106 @@ void setup() {
   pinMode(RELAY1_PIN, OUTPUT);
   pinMode(RELAY2_PIN, OUTPUT);
   pinMode(RELAY3_PIN, OUTPUT);
+  pinMode(RELAY4_PIN, OUTPUT); // Initialize RELAY4
 
   // Initialize the LED light pin
   pinMode(LED_LIGHT_PIN, OUTPUT);
 
-  // Ensure the relays and LED light are off at startup
+  // Ensure all relays and LED light are off at startup
   digitalWrite(RELAY1_PIN, LOW);
   digitalWrite(RELAY2_PIN, LOW);
   digitalWrite(RELAY3_PIN, LOW);
+  digitalWrite(RELAY4_PIN, LOW); // RELAY4 off initially
   digitalWrite(LED_LIGHT_PIN, LOW);
-
-  // Initialize the servos
-  panServo.attach(SERVO_PAN_PIN);
-  tiltServo.attach(SERVO_TILT_PIN);
 }
 
 void loop() {
-  if (Firebase.ready() && signupOK && (millis() - sendDataPrevMillis > 15000 || sendDataPrevMillis == 0)) {
-    sendDataPrevMillis = millis();
-
-    // Write an Int number on the database path test/int
-    if (Firebase.RTDB.setInt(&fbdo, "test/int", count)) {
-      Serial.println("PASSED");
-      Serial.println("PATH: " + fbdo.dataPath());
-      Serial.println("TYPE: " + fbdo.dataType());
-    } else {
-      Serial.println("FAILED");
-      Serial.println("REASON: " + fbdo.errorReason());
-    }
-    count++;
-
-    // Write a Float number on the database path test/float
-    if (Firebase.RTDB.setFloat(&fbdo, "test/float", 0.01 + random(0, 10))) {
-      Serial.println("PASSED");
-      Serial.println("PATH: " + fbdo.dataPath());
-      Serial.println("TYPE: " + fbdo.dataType());
-    } else {
-      Serial.println("FAILED");
-      Serial.println("REASON: " + fbdo.errorReason());
-    }
-  }
-
-  // Retrieve motor operation time from Firebase
-  if (Firebase.RTDB.getInt(&fbdo, "/control/motorOperationTime")) {
-    motorOperationTimeMillis = fbdo.intData() * 3600000UL; // Convert hours to milliseconds
-    Serial.print("Motor Operation Time (ms): ");
-    Serial.println(motorOperationTimeMillis);
-  } else {
-    Serial.print("Failed to get motorOperationTime: ");
-    Serial.println(fbdo.errorReason());
-  }
-
-  // If motorOperationTime is 0, turn off the motor
-  if (motorOperationTimeMillis == 0) {
-    if (motorMoved) {
-      // Return the motor to the original position if it has moved
-      Serial.println("Returning to 0 degrees (Motor Operation Time is 0)");
-      myStepper.step(-STEPS_TO_MOVE); // Move back to 0 degrees
-      motorMoved = false; // Reset motor state
-    }
-  } else {
-    // Rotate motor to 180 degrees and then back to 0 degrees based on the operation time
-    if (!motorMoved) {
-      Serial.println("Rotating 180 degrees");
-      myStepper.step(STEPS_TO_MOVE); // Move 180 degrees
-      motorStartMillis = millis(); // Record the time when the motor started moving
-      moveBackTime = motorStartMillis + motorOperationTimeMillis; // Set time to move back to 0 degrees
-      motorMoved = true; // Mark motor as moved
-    }
-
-    // Move the motor back to 0 degrees after the set interval
-    if (motorMoved && millis() >= moveBackTime) {
-      Serial.println("Returning to 0 degrees");
-      myStepper.step(-STEPS_TO_MOVE); // Move back to 0 degrees
-      motorMoved = false; // Reset motor state
-    }
-  }
-
   // Read humidity and temperature from DHT sensor
   float h = dht.readHumidity();
   float t = dht.readTemperature();
 
+  // Check if readings are valid
   if (isnan(h) || isnan(t)) {
     Serial.println("Failed to read from DHT sensor!");
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("Sensor Error");
+    lcd.setCursor(0, 1);
+    lcd.print("Check Wiring");
+    delay(2000); // Delay for 2 seconds before retrying
     return;
-  }
-
-  // Turn off relay 1 if temperature exceeds 36.5°C
-  if (t >= 36.5) {
-    digitalWrite(RELAY1_PIN, LOW);
-    Serial.println("Temperature exceeds 36.5°C. Light turned off.");
-  }
-
-  // Update Firebase with sensor data
-  if (Firebase.RTDB.setFloat(&fbdo, "/sensor_data/humidity", h)) {
-    Serial.println("Humidity updated successfully");
-  } else {
-    Serial.print("Failed to update humidity: ");
-    Serial.println(fbdo.errorReason());
-  }
-
-  if (Firebase.RTDB.setFloat(&fbdo, "/sensor_data/temperature", t)) {
-    Serial.println("Temperature updated successfully");
-  } else {
-    Serial.print("Failed to update temperature: ");
-    Serial.println(fbdo.errorReason());
   }
 
   // Display temperature and humidity on the LCD
   lcd.clear();
   lcd.setCursor(0, 0);
-  lcd.print("Hum: ");
-  lcd.print(h);
-  lcd.print(" %");
-  lcd.setCursor(0, 1);
   lcd.print("Temp: ");
   lcd.print(t);
-  lcd.print(" C");
+  lcd.print((char)223); // Degree symbol
+  lcd.print("C");
 
-  // Read control settings from Firebase
-  if (Firebase.RTDB.getFloat(&fbdo, "/settings/maxHumidity")) {
-    float maxHumidity = fbdo.floatData();
-    Serial.print("Max Humidity: ");
-    Serial.println(maxHumidity);
+  lcd.setCursor(0, 1);
+  lcd.print("Humidity: ");
+  lcd.print(h);
+  lcd.print("%");
+
+  // Firebase: Upload temperature and humidity data
+  if (Firebase.RTDB.setFloat(&fbdo, "/sensor_data/temperature", t)) {
+    Serial.print("Temperature uploaded: ");
+    Serial.println(t);
   } else {
-    Serial.print("Failed to get maxHumidity: ");
+    Serial.print("Failed to upload temperature: ");
     Serial.println(fbdo.errorReason());
   }
 
-  if (Firebase.RTDB.getFloat(&fbdo, "/settings/maxTemperature")) {
-    float minTemperature = fbdo.floatData();
-    Serial.print("Min Temperature: ");
-    Serial.println(minTemperature);
+  if (Firebase.RTDB.setFloat(&fbdo, "/sensor_data/humidity", h)) {
+    Serial.print("Humidity uploaded: ");
+    Serial.println(h);
   } else {
-    Serial.print("Failed to get minTemperature: ");
+    Serial.print("Failed to upload humidity: ");
     Serial.println(fbdo.errorReason());
   }
 
-  // Control servos based on Firebase data
-  if (Firebase.RTDB.getInt(&fbdo, "/servos/pan")) {
-    int panAngle = fbdo.intData();
-    if (panAngle != lastPanAngle) {
-      panServo.write(panAngle);
-      lastPanAngle = panAngle;
-      Serial.print("Pan Angle: ");
-      Serial.println(panAngle);
+  // Relay 1 and 2 always ON
+  digitalWrite(RELAY1_PIN, HIGH);
+  Serial.println("RELAY1 is always activated.");
+
+  digitalWrite(RELAY2_PIN, HIGH);
+  Serial.println("RELAY2 is always activated.");
+
+  // Relay 3 turns OFF at 38°C and ON at 37°C
+  if (t >= 38) {
+    digitalWrite(RELAY3_PIN, LOW);
+    Serial.println("Temperature >= 38°C. RELAY3 deactivated.");
+  } else if (t <= 37) {
+    digitalWrite(RELAY3_PIN, HIGH);
+    Serial.println("Temperature <= 37°C. RELAY3 activated.");
+  }
+
+  // Firebase: Retrieve motor operation time and control RELAY4
+  if (Firebase.RTDB.getInt(&fbdo, "/control/motorOperationTime")) {
+    relay4OperationTime = fbdo.intData() * 1000UL; // Convert seconds to milliseconds
+    Serial.print("Relay 4 Operation Time: ");
+    Serial.println(relay4OperationTime);
+
+    // If not already active, start the relay
+    if (!relay4Active && relay4OperationTime > 0) {
+      relay4StartTime = millis();
+      digitalWrite(RELAY4_PIN, HIGH); // Turn on RELAY4
+      relay4Active = true;
+      Serial.println("RELAY4 activated.");
     }
   } else {
-    Serial.print("Failed to get panAngle: ");
+    Serial.print("Failed to retrieve motor operation time: ");
     Serial.println(fbdo.errorReason());
   }
 
-  if (Firebase.RTDB.getInt(&fbdo, "/servos/tilt")) {
-    int tiltAngle = fbdo.intData();
-    if (tiltAngle != lastTiltAngle) {
-      tiltServo.write(tiltAngle);
-      lastTiltAngle = tiltAngle;
-      Serial.print("Tilt Angle: ");
-      Serial.println(tiltAngle);
-    }
-  } else {
-    Serial.print("Failed to get tiltAngle: ");
-    Serial.println(fbdo.errorReason());
+  // Turn off RELAY4 after the set duration
+  if (relay4Active && (millis() - relay4StartTime >= relay4OperationTime)) {
+    digitalWrite(RELAY4_PIN, LOW); // Turn off RELAY4
+    relay4Active = false;
+    Serial.println("RELAY4 deactivated.");
   }
 
-  // Control LED light based on Firebase data
-  if (Firebase.RTDB.getBool(&fbdo, "/light")) {
-    bool ledLight = fbdo.boolData();
-    digitalWrite(LED_LIGHT_PIN, ledLight ? HIGH : LOW);
-    Serial.print("LED Light: ");
-    Serial.println(ledLight ? "ON" : "OFF");
-  } else {
-    Serial.print("Failed to get ledLight: ");
-    Serial.println(fbdo.errorReason());
-  }
-
-  delay(2000); // Delay between sensor readings
+  delay(2000); // Delay for 2 seconds before the next loop iteration
 }
