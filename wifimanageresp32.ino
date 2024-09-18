@@ -1,5 +1,3 @@
-//with relay 4
-
 #include <Arduino.h>
 #include <WiFi.h>
 #include <Firebase_ESP_Client.h>
@@ -150,7 +148,7 @@ void setup() {
   // Ensure all relays and LED light are off at startup
   digitalWrite(RELAY1_PIN, LOW);
   digitalWrite(RELAY2_PIN, LOW);
-  digitalWrite(RELAY3_PIN, LOW);
+  digitalWrite(RELAY3_PIN, HIGH); // Relay 3 ON by default
   digitalWrite(RELAY4_PIN, LOW); // RELAY4 off initially
   digitalWrite(LED_LIGHT_PIN, LOW);
 }
@@ -195,9 +193,9 @@ void loop() {
 
   // Relay 3 Logic
   if (t >= 38) {
-    digitalWrite(RELAY3_PIN, LOW);
+    digitalWrite(RELAY3_PIN, LOW);  // Turn OFF relay 3
   } else if (t <= 37) {
-    digitalWrite(RELAY3_PIN, HIGH);
+    digitalWrite(RELAY3_PIN, HIGH); // Turn ON relay 3
   }
 
   // Firebase: Retrieve motor operation time for relay 4
